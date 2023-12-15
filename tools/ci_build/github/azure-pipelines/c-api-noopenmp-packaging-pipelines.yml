@@ -242,6 +242,7 @@ stages:
     runTests: ${{ parameters.RunOnnxRuntimeTests }}
     buildJava: true
     java_artifact_id: onnxruntime_gpu
+    CudaVersion: 11.8
 
 # CUDA with Tensorrt
 - template: templates/win-ci.yml
@@ -257,6 +258,7 @@ stages:
     runTests: ${{ parameters.RunOnnxRuntimeTests }}
     buildJava: true
     java_artifact_id: onnxruntime_gpu
+    CudaVersion: 11.8
     UseIncreasedTimeoutForTests: ${{ parameters.UseIncreasedTimeoutForTests }}
 
 # ROCm
