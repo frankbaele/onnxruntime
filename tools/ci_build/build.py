@@ -1514,8 +1514,8 @@ def generate_build_tree(
                 elif config == "Debug":
                     cflags = ["-ggdb3", "-O0"]
                     if platform.architecture()[0] != "32bit" and not (args.enable_training_apis and args.use_cuda):
-                        cflags += ["/fsanitize=address"]
-                        ldflags += ["/fsanitize=address"]
+                        cflags += ["-fsanitize=address"]
+                        ldflags += ["-fsanitize=address"]
                 elif config == "MinSizeRel":
                     cflags = [
                         "-DNDEBUG",
