@@ -211,7 +211,7 @@ class StableDiffusionPipeline:
         return self.backend.run_engine(model_name, feed_dict)
 
     def initialize_latents(self, batch_size, unet_channels, latent_height, latent_width):
-        latents_dtype = torch.float32  # text_embeddings.dtype
+        latents_dtype = torch.float16
         latents_shape = (batch_size, unet_channels, latent_height, latent_width)
         latents = torch.randn(latents_shape, device=self.device, dtype=latents_dtype, generator=self.generator)
         # Scale the initial noise by the standard deviation required by the scheduler
@@ -373,8 +373,6 @@ class StableDiffusionPipeline:
         denoiser="unet",
         timesteps=None,
         step_offset=0,
-        mask=None,
-        masked_image_latents=None,
         guidance=7.5,
         add_kwargs=None,
     ):
@@ -393,18 +391,13 @@ class StableDiffusionPipeline:
                 latent_model_input, step_offset + step_index, timestep
             )
 
-            if isinstance(mask, torch.Tensor):
-                latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
-
             # Predict the noise residual
             if self.nvtx_profile:
                 nvtx_unet = nvtx.start_range(message="unet", color="blue")
 
-            timestep_float = timestep.float() if timestep.dtype != torch.float32 else timestep
-
             params = {
                 "sample": latent_model_input,
-                "timestep": timestep_float,
+                "timestep": timestep.to(torch.float16),
                 "encoder_hidden_states": text_embeddings,
             }
 
