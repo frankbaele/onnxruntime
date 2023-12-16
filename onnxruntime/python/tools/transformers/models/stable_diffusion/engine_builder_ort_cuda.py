@@ -9,10 +9,13 @@ import os
 import shutil
 from typing import List, Optional
 
+import onnx
 import torch
 from diffusion_models import PipelineInfo
 from engine_builder import EngineBuilder, EngineType
-from ort_utils import CudaSession
+from onnx import TensorProto
+from ort_utils import CudaSession, OnnxModel
+from packaging import version
 
 import onnxruntime as ort
 
@@ -153,6 +156,65 @@ class OrtCudaEngineBuilder(EngineBuilder):
             use_cuda_graph=self.use_cuda_graph,
         )
 
+    def optimized_onnx_path(self, engine_dir, model_name):
+        suffix = "" if self.model_config[model_name].fp16 else ".fp32"
+        return self.get_onnx_path(model_name, engine_dir, opt=True, suffix=suffix)
+
+    def import_diffusers_engine(self, diffusers_onnx_dir: str, engine_dir: str):
+        """Import optimized onnx models for diffusers from Olive or optimize_pipeline tools.
+
+        Args:
+            diffusers_onnx_dir (str): optimized onnx directory of Olive
+            engine_dir (str): the directory to store imported onnx
+        """
+        if version.parse(ort.__version__) < version.parse("1.17.0"):
+            print("Skip importing since onnxruntime-gpu version < 1.17.0.")
+            return
+
+        for model_name, model_obj in self.models.items():
+            onnx_import_path = self.optimized_onnx_path(diffusers_onnx_dir, model_name)
+            if not os.path.exists(onnx_import_path):
+                print(f"{onnx_import_path} not existed. Skip importing.")
+                continue
+
+            onnx_opt_path = self.optimized_onnx_path(engine_dir, model_name)
+            if os.path.exists(onnx_opt_path):
+                print(f"{onnx_opt_path} existed. Skip importing.")
+                continue
+
+            if model_name == "vae" and self.pipeline_info.is_xl():
+                print(f"Skip importing VAE since it is not fully compatible with float16: {onnx_import_path}.")
+                continue
+
+            model = OnnxModel(onnx.load(onnx_import_path, load_external_data=True))
+
+            if model_name in ["clip", "clip2"]:
+                hidden_states_per_layer = []
+                for output in model.graph().output:
+                    if output.name.startswith("hidden_states."):
+                        hidden_states_per_layer.append(output.name)
+                if hidden_states_per_layer:
+                    kept_hidden_states = hidden_states_per_layer[-2 - model_obj.clip_skip]
+                    model.rename_graph_output(kept_hidden_states, "hidden_states")
+
+                model.rename_graph_output(
+                    "last_hidden_state" if model_name == "clip" else "text_embeds", "text_embeddings"
+                )
+                model.prune_graph(
+                    ["text_embeddings", "hidden_states"] if hidden_states_per_layer else ["text_embeddings"]
+                )
+
+                if model_name == "clip2":
+                    model.change_graph_input_type(model.find_graph_input("input_ids"), TensorProto.INT32)
+
+                model.save_model_to_file(onnx_opt_path, use_external_data_format=(model_name == "clip2"))
+            elif model_name in ["unet", "unetxl"]:
+                model.rename_graph_output("out_sample", "latent")
+                model.save_model_to_file(onnx_opt_path, use_external_data_format=True)
+
+            del model
+            continue
+
     def build_engines(
         self,
         engine_dir: str,
@@ -162,7 +224,8 @@ class OrtCudaEngineBuilder(EngineBuilder):
         onnx_opset_version: int = 17,
         force_engine_rebuild: bool = False,
         device_id: int = 0,
-        save_fp32_intermediate_model=False,
+        save_fp32_intermediate_model: bool = False,
+        import_engine_dir: Optional[str] = None,
     ):
         self.torch_device = torch.device("cuda", device_id)
         self.load_models(framework_model_dir)
@@ -188,6 +251,13 @@ class OrtCudaEngineBuilder(EngineBuilder):
             if model_name not in self.model_config:
                 self.model_config[model_name] = _ModelConfig(onnx_opset_version, self.use_cuda_graph)
 
+        # Import Engine
+        if import_engine_dir:
+            if self.pipeline_info.is_xl():
+                self.import_diffusers_engine(import_engine_dir, engine_dir)
+            else:
+                print(f"Only support importing SDXL onnx. Ignore --engine-dir {import_engine_dir}")
+
         # Load lora only when we need export text encoder or UNet to ONNX.
         load_lora = False
         if self.pipeline_info.lora_weights:
@@ -195,9 +265,7 @@ class OrtCudaEngineBuilder(EngineBuilder):
                 if model_name not in ["clip", "clip2", "unet", "unetxl"]:
                     continue
                 onnx_path = self.get_onnx_path(model_name, onnx_dir, opt=False)
-
-                suffix = ".fp16" if self.model_config[model_name].fp16 else ".fp32"
-                onnx_opt_path = self.get_onnx_path(model_name, engine_dir, opt=True, suffix=suffix)
+                onnx_opt_path = self.optimized_onnx_path(engine_dir, model_name)
                 if not os.path.exists(onnx_opt_path):
                     if not os.path.exists(onnx_path):
                         load_lora = True
@@ -212,8 +280,7 @@ class OrtCudaEngineBuilder(EngineBuilder):
                 continue
 
             onnx_path = self.get_onnx_path(model_name, onnx_dir, opt=False)
-            suffix = ".fp16" if self.model_config[model_name].fp16 else ".fp32"
-            onnx_opt_path = self.get_onnx_path(model_name, engine_dir, opt=True, suffix=suffix)
+            onnx_opt_path = self.optimized_onnx_path(engine_dir, model_name)
             if not os.path.exists(onnx_opt_path):
                 if not os.path.exists(onnx_path):
                     print("----")
@@ -291,9 +358,7 @@ class OrtCudaEngineBuilder(EngineBuilder):
             if model_name == "vae" and self.vae_torch_fallback:
                 continue
 
-            suffix = ".fp16" if self.model_config[model_name].fp16 else ".fp32"
-            onnx_opt_path = self.get_onnx_path(model_name, engine_dir, opt=True, suffix=suffix)
-
+            onnx_opt_path = self.optimized_onnx_path(engine_dir, model_name)
             use_cuda_graph = self.model_config[model_name].use_cuda_graph
 
             engine = OrtCudaEngine(
