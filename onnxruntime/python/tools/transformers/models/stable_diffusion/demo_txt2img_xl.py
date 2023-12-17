@@ -309,6 +309,64 @@ def run_dynamic_shape_demo(args):
         refiner.teardown()
 
 
+def run_turbo_demo(args):
+    """Run demo of generating images with test prompts with ORT CUDA provider."""
+    args.engine = "ORT_CUDA"
+    args.disable_cuda_graph = True
+    base, refiner = load_pipelines(args, 1)
+
+    from datasets import load_dataset
+
+    dataset = load_dataset("Gustavosta/Stable-Diffusion-Prompts")
+    num_rows = dataset["test"].num_rows
+    batch_size = args.batch_size
+    num_batch = int(num_rows / batch_size)
+    args.batch_size = 1
+    for i in range(num_batch):
+        args.prompt = [dataset["test"][i]["Prompt"] for i in range(i * batch_size, (i + 1) * batch_size)]
+        base.set_scheduler(args.scheduler)
+        if refiner:
+            refiner.set_scheduler(args.refiner_scheduler)
+        prompt, negative_prompt = repeat_prompt(args)
+        run_pipelines(args, base, refiner, prompt, negative_prompt, is_warm_up=False)
+
+    base.teardown()
+    if refiner:
+        refiner.teardown()
+
+def run_clip_score(args):
+    from datasets import load_dataset
+    prompts = load_dataset("nateraw/parti-prompts", split="train")
+    prompts = prompts.shuffle(seed=123)
+    sample_prompts = [prompts[i]["Prompt"] for i in range(100)]
+
+    from torchmetrics.functional.multimodal import clip_score
+    from functools import partial
+
+    clip_score_fn = partial(clip_score, model_name_or_path="openai/clip-vit-base-patch16")
+
+    def calculate_clip_score(images, prompts):
+        images_int = (images * 255).astype("uint8")
+        clip_score = clip_score_fn(torch.from_numpy(images_int).permute(0, 3, 1, 2), prompts).detach()
+        return round(float(clip_score), 4)
+
+    seed = 0
+    generator = torch.manual_seed(seed)
+
+    base, refiner = load_pipelines(args, 1)
+    base.set_scheduler(args.scheduler)
+    if refiner:
+        refiner.set_scheduler(args.refiner_scheduler)
+
+    prompt, negative_prompt = repeat_prompt(args)
+    run_pipelines(args, base, refiner, prompt, negative_prompt, is_warm_up=False)
+
+
+    images = sd_pipeline(prompts, num_images_per_prompt=1, generator=generator, output_type="np").images
+    sd_clip_score = calculate_clip_score(images, prompts)
+    print(f"CLIP score: {sd_clip_score}")
+
+
 if __name__ == "__main__":
     coloredlogs.install(fmt="%(funcName)20s: %(message)s")
 
@@ -318,6 +376,9 @@ if __name__ == "__main__":
 
     no_prompt = isinstance(args.prompt, list) and len(args.prompt) == 1 and not args.prompt[0]
     if no_prompt:
-        run_dynamic_shape_demo(args)
+        if args.version == "xl-turbo":
+            run_turbo_demo(args)
+        else:
+            run_dynamic_shape_demo(args)
     else:
         run_demo(args)

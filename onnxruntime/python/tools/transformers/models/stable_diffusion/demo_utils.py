@@ -40,7 +40,8 @@ class RawTextArgumentDefaultsHelpFormatter(argparse.ArgumentDefaultsHelpFormatte
 
 def arg_parser(description: str):
     return argparse.ArgumentParser(
-        description=description, formatter_class=RawTextArgumentDefaultsHelpFormatter, add_help=False
+        description=description,
+        formatter_class=RawTextArgumentDefaultsHelpFormatter,
     )
 
 
@@ -66,7 +67,6 @@ def set_default_arguments(args):
 
 def parse_arguments(is_xl: bool, parser):
     engines = ["ORT_CUDA", "ORT_TRT", "TRT"]
-    parser.add_argument("--help", action="store_true", help="show this help message and exit")
 
     parser.add_argument(
         "-e",
@@ -89,14 +89,14 @@ def parse_arguments(is_xl: bool, parser):
     )
 
     parser.add_argument(
-        "-h",
+        "-y",
         "--height",
         type=int,
         default=None,
         help="Height of image to generate (must be multiple of 8).",
     )
     parser.add_argument(
-        "-w", "--width", type=int, default=None, help="Height of image to generate (must be multiple of 8)."
+        "-x", "--width", type=int, default=None, help="Height of image to generate (must be multiple of 8)."
     )
 
     parser.add_argument(
@@ -113,6 +113,13 @@ def parse_arguments(is_xl: bool, parser):
         "--work-dir",
         default=".",
         help="Root Directory to store torch or ONNX models, built engines and output images etc.",
+    )
+
+    parser.add_argument(
+        "-i",
+        "--engine-dir",
+        default=None,
+        help="Root Directory to store built engines or optimized ONNX models etc.",
     )
 
     parser.add_argument("prompt", nargs="*", default=[""], help="Text prompt(s) to guide image generation.")
@@ -264,9 +271,6 @@ def parse_arguments(is_xl: bool, parser):
     )
 
     args = parser.parse_args()
-    if args.help:
-        parser.print_help()
-        sys.exit()
 
     set_default_arguments(args)
 
@@ -425,6 +429,17 @@ def init_pipeline(
         engine_type=engine_type,
     )
 
+    import_engine_dir = None
+    if args.engine_dir:
+        if not os.path.exists(args.engine_dir):
+            raise RuntimeError(f"--engine_dir directory does not exist: {args.engine_dir}")
+
+        # Support importing from optimized diffusers onnx pipeline
+        if engine_type == EngineType.ORT_CUDA and os.path.exists(os.path.join(args.engine_dir, "model_index.json")):
+            import_engine_dir = args.engine_dir
+        else:
+            engine_dir = args.engine_dir
+
     if engine_type == EngineType.ORT_CUDA:
         # Build CUDA EP engines and load pytorch modules
         pipeline.backend.build_engines(
@@ -434,6 +449,7 @@ def init_pipeline(
             tmp_dir=os.path.join(args.work_dir or ".", engine_type.name, pipeline_info.short_name(), "tmp"),
             force_engine_rebuild=args.force_engine_build,
             device_id=torch.cuda.current_device(),
+            import_engine_dir=import_engine_dir,
         )
     elif engine_type == EngineType.ORT_TRT:
         # Build TensorRT EP engines and load pytorch modules

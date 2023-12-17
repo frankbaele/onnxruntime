@@ -405,8 +405,7 @@ class BaseModel:
 
     def fp32_input_output_names(self) -> List[str]:
         """For CUDA EP, we export ONNX model with FP32 first, then convert it to mixed precision model.
-        This is a list of input or output names that are kept as float32 during converting.
-        For the first version, we will use same data type as TensorRT.
+        This is a list of input or output names that are kept as float32 in optimized model.
         """
         return []
 
@@ -519,7 +518,7 @@ class CLIP(BaseModel):
         return ["text_embeddings"]
 
     def get_dynamic_axes(self):
-        return {"input_ids": {0: "B"}, "text_embeddings": {0: "B"}}
+        return {"input_ids": {0: "B", 1: "S"}, "text_embeddings": {0: "B", 1: "S"}}
 
     def get_input_profile(self, batch_size, image_height, image_width, static_batch, static_image_shape):
         self.check_dims(batch_size, image_height, image_width)
@@ -581,7 +580,7 @@ class CLIP(BaseModel):
             onnx.helper.make_tensor_value_info(
                 graph_output_name,
                 graph.output[0].type.tensor_type.elem_type,
-                ["B", self.text_maxlen, self.embedding_dim],
+                ["B", "S", self.embedding_dim],
             )
         )
 
@@ -929,10 +928,8 @@ class UNet(BaseModel):
         dtype = torch.float16 if self.fp16 else torch.float32
         m = self.get_batch_multiplier()
         output = (
-            torch.randn(
-                m * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
-            ),
-            torch.tensor([1.0], dtype=torch.float32, device=self.device),
+            torch.randn(m * batch_size, self.unet_dim, latent_height, latent_width, dtype=dtype, device=self.device),
+            torch.tensor([1.0], dtype=dtype, device=self.device),
             torch.randn(m * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         )
 
@@ -945,9 +942,6 @@ class UNet(BaseModel):
                 torch.randn(len(self.controlnet), dtype=dtype, device=self.device),
             )
         return output
-
-    def fp32_input_output_names(self) -> List[str]:
-        return ["sample", "timestep"]
 
 
 class UNetXL(BaseModel):
@@ -1107,9 +1101,9 @@ class UNetXL(BaseModel):
         if not self.controlnet:
             return (
                 torch.randn(
-                    m * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
+                    m * batch_size, self.unet_dim, latent_height, latent_width, dtype=dtype, device=self.device
                 ),
-                torch.tensor([1.0], dtype=torch.float32, device=self.device),
+                torch.tensor([1.0], dtype=dtype, device=self.device),
                 torch.randn(m * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
                 {
                     "added_cond_kwargs": {
@@ -1122,9 +1116,9 @@ class UNetXL(BaseModel):
             # sample, timestep, encoder_hidden_states, text_embeds, time_ids, controlnet_images, controlnet_scales,
             return (
                 torch.randn(
-                    m * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
+                    m * batch_size, self.unet_dim, latent_height, latent_width, dtype=dtype, device=self.device
                 ),
-                torch.tensor([1.0], dtype=torch.float32, device=self.device),
+                torch.tensor([1.0], dtype=dtype, device=self.device),
                 torch.randn(m * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
                 torch.randn(m * batch_size, 1280, dtype=dtype, device=self.device),
                 torch.randn(m * batch_size, self.time_dim, dtype=dtype, device=self.device),
@@ -1133,9 +1127,6 @@ class UNetXL(BaseModel):
                 ),
                 torch.randn(len(self.controlnet), dtype=dtype, device=self.device),
             )
-
-    def fp32_input_output_names(self) -> List[str]:
-        return ["sample", "timestep"]
 
 
 # VAE Decoder
@@ -1229,7 +1220,6 @@ class VAE(BaseModel):
 
     def fp32_input_output_names(self) -> List[str]:
         return [] if self.fp16 else ["latent", "images"]
-
 
 def get_tokenizer(pipeline_info: PipelineInfo, framework_model_dir, hf_token, subfolder="tokenizer"):
     tokenizer_dir = os.path.join(framework_model_dir, pipeline_info.name(), subfolder)

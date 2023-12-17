@@ -87,24 +87,36 @@ class EngineBuilder:
             del engine
         self.engines = {}
 
+    def get_diffusers_module_name(self, model_name):
+        name_mapping = {
+            "clip": "text_encoder",
+            "clip2": "text_encoder_2",
+            "unet": "unet",
+            "unetxl": "unet",
+            "vae": "vae_decoder",
+        }
+        return name_mapping[model_name] if model_name in name_mapping else model_name
+
     def get_cached_model_name(self, model_name):
+        model_name = self.get_diffusers_module_name(model_name)
+        is_unet = model_name == "unet"
         hash_source = []
-        if model_name in ["clip", "clip2", "unet", "unetxl"] and self.pipeline_info.lora_weights:
+        if model_name in ["text_encoder", "text_encoder_2", "unet"] and self.pipeline_info.lora_weights:
             if self.pipeline_info.lora_weights in [
                 "latent-consistency/lcm-lora-sdxl",
                 "latent-consistency/lcm-lora-sdv1-5",
             ]:
-                if model_name in ["unet", "unetxl"]:
-                    model_name = model_name + "_lcm-lora"
+                if is_unet:
+                    model_name = "unet_lcm-lora"
             else:
                 model_name = model_name + "_lora"
                 hash_source.append(self.pipeline_info.lora_weights)
 
         # TODO(tianleiwu): save custom model to a directory named by its original model.
-        if model_name == "unetxl" and self.pipeline_info.custom_unet():
+        if is_unet and self.pipeline_info.custom_unet():
             model_name = model_name + "_lcm"
 
-        if model_name in ["unet", "unetxl"] and self.pipeline_info.controlnet:
+        if model_name in ["unet"] and self.pipeline_info.controlnet:
             model_name = model_name + "_" + "_".join(self.pipeline_info.controlnet)
 
         if hash_source:
@@ -118,8 +130,9 @@ class EngineBuilder:
 
     def get_model_dir(self, model_name, root_dir, opt=True, suffix="", create=True):
         engine_name = self.engine_type.name.lower()
-        # TODO: Need not add engine name for ORT_CUDA
-        directory_name = self.get_cached_model_name(model_name) + (f".{engine_name}" if opt else "") + suffix
+        if engine_name != "ort_cuda" and not suffix:
+            suffix = f".{engine_name}" if opt else ""
+        directory_name = self.get_cached_model_name(model_name) + suffix
         onnx_model_dir = os.path.join(root_dir, directory_name)
         if create:
             os.makedirs(onnx_model_dir, exist_ok=True)
@@ -215,6 +228,7 @@ class EngineBuilder:
                 None,  # not loaded yet
                 device=self.torch_device,
                 max_batch_size=self.max_batch_size,
+                fp16=self.custom_fp16_vae is not None,
                 custom_fp16_vae=self.custom_fp16_vae,
             )
 

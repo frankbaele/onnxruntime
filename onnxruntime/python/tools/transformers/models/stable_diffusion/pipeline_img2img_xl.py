@@ -131,7 +131,7 @@ class Img2ImgXLPipeline(StableDiffusionPipeline):
                 init_latents = self.encode_image(init_image)
 
             # Add noise to latents using timesteps
-            noise = torch.randn(init_latents.shape, device=self.device, dtype=torch.float32, generator=self.generator)
+            noise = torch.randn(init_latents.shape, device=self.device, dtype=torch.float16, generator=self.generator)
             latents = self.scheduler.add_noise(init_latents, noise, t_start, latent_timestep)
 
             # UNet denoiser
